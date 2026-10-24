@@ -1,0 +1,18 @@
+// Settings del proyecto Luna (app Android)
+// Repositorios de donde Gradle descarga el plugin de Android.
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "Luna"
+include ':app'
