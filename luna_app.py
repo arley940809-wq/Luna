@@ -18,6 +18,11 @@
 # barra lateral por sesión. Se crea gratis en https://aistudio.google.com
 # (botón "Get API Key"). Nunca la escribas dentro del código.
 #
+# Conversación guardada: el historial de chat de cada perfil se guarda en
+# Supabase, tabla "conversacion" (perfil, rol, texto). Así, si cierras la
+# app o te llaman en medio de un chat, al volver la conversación sigue
+# donde quedó. Cada perfil ve solo su propio historial.
+#
 # Cómo publicarla (desde el teléfono):
 #   1. Crea una cuenta en github.com (si no tienes).
 #   2. Crea un repositorio nuevo (por ejemplo "luna") y sube estos 2 archivos:
@@ -129,6 +134,65 @@ def guardar_memoria(texto, perfil):
         return False
 
 
+def leer_conversacion(perfil, limite=50):
+    """Lee los últimos mensajes del historial de un perfil. Devuelve lista de dicts."""
+    sb = _supabase()
+    if not sb:
+        return []
+    url, key = sb
+    try:
+        r = requests.get(
+            f"{url}/rest/v1/conversacion?select=rol,texto&perfil=eq.{perfil}&order=id.desc&limit={limite}",
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            timeout=20,
+        )
+        if r.status_code != 200:
+            return []
+        return list(reversed(r.json()))
+    except Exception:
+        return []
+
+
+def guardar_mensaje(perfil, rol, texto):
+    """Guarda un mensaje del chat en la base de datos. Devuelve True si quedó guardado."""
+    sb = _supabase()
+    if not sb:
+        return False
+    url, key = sb
+    try:
+        r = requests.post(
+            f"{url}/rest/v1/conversacion",
+            headers={
+                "apikey": key,
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal",
+            },
+            json={"perfil": perfil, "rol": rol, "texto": texto},
+            timeout=20,
+        )
+        return r.status_code in (200, 201, 204)
+    except Exception:
+        return False
+
+
+def borrar_conversacion(perfil):
+    """Borra todo el historial de chat de un perfil. Devuelve True si se borró."""
+    sb = _supabase()
+    if not sb:
+        return False
+    url, key = sb
+    try:
+        r = requests.delete(
+            f"{url}/rest/v1/conversacion?perfil=eq.{perfil}",
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            timeout=20,
+        )
+        return r.status_code in (200, 204)
+    except Exception:
+        return False
+
+
 def formatear_memoria(privada, familiar):
     """Texto con las dos partes de la memoria, para mostrar o para Luna."""
     partes = []
@@ -146,6 +210,8 @@ st.title("🌙 Luna")
 # ---- Entrada con contraseña ----
 if "perfil" not in st.session_state:
     st.session_state.perfil = None
+if "confirmar_borrar" not in st.session_state:
+    st.session_state.confirmar_borrar = False
 
 if not st.session_state.perfil:
     st.write("¿Quién eres?")
@@ -218,6 +284,21 @@ with st.sidebar:
             file_name="memoria.txt",
             help="Guarda la memoria en tu teléfono para no perderla.",
         )
+    st.subheader("Conversación")
+    if not st.session_state.confirmar_borrar:
+        if st.button("Borrar mi conversación"):
+            st.session_state.confirmar_borrar = True
+            st.rerun()
+    else:
+        st.warning("¿Borrar todo tu historial de chat? Esto no se puede deshacer.")
+        if st.button("Sí, borrar todo"):
+            borrar_conversacion(perfil)
+            st.session_state.pop("mensajes", None)
+            st.session_state.confirmar_borrar = False
+            st.rerun()
+        if st.button("Cancelar"):
+            st.session_state.confirmar_borrar = False
+            st.rerun()
 
 if not llave:
     st.info(
@@ -256,17 +337,23 @@ def responder_con_luna():
 
 
 if "mensajes" not in st.session_state:
-    st.session_state.mensajes = [
-        {
-            "rol": "assistant",
-            "texto": (
-                f"¡Hola, soy {NOMBRE}! Escribe abajo para chatear conmigo.\n\n"
-                "Si me dices algo que empiece con **'recuerda que'**, lo guardo en mi memoria. "
-                "Si activas 'Guardar como familiar' en la barra lateral, lo guardado lo veremos los dos. "
-                "Escribe **'memoria'** para ver lo que recuerdo de ti."
-            ),
-        }
-    ]
+    historial = leer_conversacion(perfil)
+    if historial:
+        st.session_state.mensajes = [
+            {"rol": m["rol"], "texto": m["texto"]} for m in historial
+        ]
+    else:
+        st.session_state.mensajes = [
+            {
+                "rol": "assistant",
+                "texto": (
+                    f"¡Hola, soy {NOMBRE}! Escribe abajo para chatear conmigo.\n\n"
+                    "Si me dices algo que empiece con **'recuerda que'**, lo guardo en mi memoria. "
+                    "Si activas 'Guardar como familiar' en la barra lateral, lo guardado lo veremos los dos. "
+                    "Escribe **'memoria'** para ver lo que recuerdo de ti."
+                ),
+            }
+        ]
 
 # ---- Conversación ----
 for m in st.session_state.mensajes:
@@ -275,6 +362,7 @@ for m in st.session_state.mensajes:
 
 if texto := st.chat_input("Escribe tu mensaje..."):
     st.session_state.mensajes.append({"rol": "user", "texto": texto})
+    guardar_mensaje(perfil, "user", texto)
     with st.chat_message("user"):
         st.markdown(texto)
 
@@ -301,5 +389,6 @@ if texto := st.chat_input("Escribe tu mensaje..."):
             respuesta = f"Hubo un problema al responder: {e}\n\nRevisa tu llave y tu conexión."
 
     st.session_state.mensajes.append({"rol": "assistant", "texto": respuesta})
+    guardar_mensaje(perfil, "assistant", respuesta)
     with st.chat_message("assistant"):
         st.markdown(respuesta)
