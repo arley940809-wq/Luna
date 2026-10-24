@@ -3,6 +3,12 @@
 # Qué es: la misma Luna de Colab, pero con pantalla de chat con burbujas,
 # como WhatsApp o como esta app. Se publica gratis en Streamlit Cloud.
 #
+# Memoria permanente: lo que aprende Luna ya no vive en un archivo del
+# servidor (que se borra cuando la app se duerme), sino en una base de
+# datos gratis de Supabase. Así recuerda para siempre, aunque la app se
+# reinicie. La conexión se guarda en los Secrets de Streamlit, nunca en
+# el código: SUPABASE_URL y SUPABASE_ANON_KEY.
+#
 # Cómo publicarla (desde el teléfono):
 #   1. Crea una cuenta en github.com (si no tienes).
 #   2. Crea un repositorio nuevo (por ejemplo "luna") y sube estos 2 archivos:
@@ -15,8 +21,7 @@
 # La llave se crea gratis en https://aistudio.google.com (botón "Get API Key").
 # Nunca la escribas dentro del código: se pega en la barra lateral al abrir la app.
 
-import os
-
+import requests
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -29,23 +34,66 @@ PERSONALIDAD = (
     "recuerdas lo importante de tu usuario y siempre preguntas "
     "antes de hacer algo delicado."
 )
-ARCHIVO_MEMORIA = "memoria.txt"
+ARCHIVO_MEMORIA = "memoria.txt"  # nombre del archivo al descargar la memoria
 MODELO = "gemini-3.6-flash"  # modelo actual gratis de Google
 
 
-# ---- Memoria: el cuaderno de la asistente ----
+# ---- Memoria permanente (base de datos Supabase) ----
+def _supabase():
+    """Devuelve (url, llave) desde los Secrets de Streamlit, o None si faltan."""
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_ANON_KEY"]
+    except Exception:
+        return None
+    if not url or not key:
+        return None
+    return url.rstrip("/"), key
+
+
 def leer_memoria():
-    """Lee lo que la asistente recuerda de ti (o avisa si aún no sabe nada)."""
-    if os.path.exists(ARCHIVO_MEMORIA):
-        with open(ARCHIVO_MEMORIA, "r", encoding="utf-8") as f:
-            return f.read()
-    return "Todavía no sé nada de ti."
+    """Lee lo que Luna recuerda de ti desde la base de datos."""
+    sb = _supabase()
+    if not sb:
+        return "Todavía no sé nada de ti."
+    url, key = sb
+    try:
+        r = requests.get(
+            f"{url}/rest/v1/memoria?select=texto&order=id.asc",
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            timeout=20,
+        )
+        if r.status_code != 200:
+            return "Todavía no sé nada de ti."
+        filas = r.json()
+        if not filas:
+            return "Todavía no sé nada de ti."
+        return "\n".join("- " + f["texto"] for f in filas)
+    except Exception:
+        return "Todavía no sé nada de ti."
 
 
 def guardar_memoria(texto):
-    """Guarda un dato nuevo en el cuaderno de memoria."""
-    with open(ARCHIVO_MEMORIA, "a", encoding="utf-8") as f:
-        f.write("- " + texto + "\n")
+    """Guarda un dato nuevo en la base de datos. Devuelve True si quedó guardado."""
+    sb = _supabase()
+    if not sb:
+        return False
+    url, key = sb
+    try:
+        r = requests.post(
+            f"{url}/rest/v1/memoria",
+            headers={
+                "apikey": key,
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal",
+            },
+            json={"texto": texto},
+            timeout=20,
+        )
+        return r.status_code in (200, 201, 204)
+    except Exception:
+        return False
 
 
 # ---- Página ----
@@ -60,14 +108,18 @@ with st.sidebar:
         type="password",
         help="Se crea en aistudio.google.com. Solo vive en tu sesión, no se guarda en el código.",
     )
+    if not _supabase():
+        st.warning(
+            "Falta conectar la base de datos: agrega SUPABASE_URL y "
+            "SUPABASE_ANON_KEY en los Secrets de la app en Streamlit Cloud."
+        )
     st.subheader("Lo que Luna recuerda")
-    st.write(leer_memoria())
-    if os.path.exists(ARCHIVO_MEMORIA):
-        with open(ARCHIVO_MEMORIA, "r", encoding="utf-8") as f:
-            contenido = f.read()
+    memoria_texto = leer_memoria()
+    st.write(memoria_texto)
+    if memoria_texto != "Todavía no sé nada de ti.":
         st.download_button(
             "Descargar memoria.txt",
-            contenido,
+            memoria_texto,
             file_name="memoria.txt",
             help="Guarda la memoria en tu teléfono para no perderla.",
         )
@@ -132,8 +184,13 @@ if texto := st.chat_input("Escribe tu mensaje..."):
     if texto.lower().startswith("recuerda que"):
         dato = texto[len("recuerda que"):].strip()
         if dato:
-            guardar_memoria(dato)
-            respuesta = "Listo, ya lo guardé en mi memoria."
+            if guardar_memoria(dato):
+                respuesta = "Listo, ya lo guardé en mi memoria."
+            else:
+                respuesta = (
+                    "No pude guardarlo en mi memoria permanente. "
+                    "Revisa la conexión e inténtalo de nuevo."
+                )
         else:
             respuesta = "Dime qué quieres que recuerde, por ejemplo: recuerda que mi esposa es Betsy"
     elif texto.lower() == "memoria":
