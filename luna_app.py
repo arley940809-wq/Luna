@@ -23,6 +23,12 @@
 # app o te llaman en medio de un chat, al volver la conversación sigue
 # donde quedó. Cada perfil ve solo su propio historial.
 #
+# Búsqueda en internet: Luna usa la herramienta de búsqueda de Google
+# del mismo modelo (sin llave ni servicio nuevo). Cuando le preguntan
+# algo actual (clima, noticias, resultados), busca y responde con las
+# fuentes. Si la búsqueda falla, responde sin buscar para no quedarse
+# callada.
+#
 # Cómo publicarla (desde el teléfono):
 #   1. Crea una cuenta en github.com (si no tienes).
 #   2. Crea un repositorio nuevo (por ejemplo "luna") y sube estos 2 archivos:
@@ -43,7 +49,11 @@ PERSONALIDAD = (
     "Eres una asistente amable, paciente y divertida. "
     "Hablas en español sencillo. Ayudas a practicar inglés, "
     "recuerdas lo importante de tu usuario y siempre preguntas "
-    "antes de hacer algo delicado."
+    "antes de hacer algo delicado. "
+    "Cuando te pregunten algo que cambia con el tiempo (el clima de hoy, "
+    "noticias, resultados de deportes, precios), busca en internet antes "
+    "de responder y menciona de dónde sacaste la información. "
+    "Si no encuentras nada, dilo claro, nunca inventes."
 )
 ARCHIVO_MEMORIA = "memoria.txt"  # nombre del archivo al descargar la memoria
 MODELO = "gemini-3.6-flash"  # modelo actual gratis de Google
@@ -109,7 +119,7 @@ def leer_memoria(perfil):
                 privada.append(f["texto"])
         return privada, familiar
     except Exception:
-        return [], []
+        return []
 
 
 def guardar_memoria(texto, perfil):
@@ -241,6 +251,7 @@ nombre_perfil = PERFILES[perfil]["nombre"]
 with st.sidebar:
     st.header("Ajustes")
     st.write(f"Perfil: {nombre_perfil}")
+    st.write("🌐 Puedo buscar en internet: pregúntame algo actual y lo busco.")
     if st.button("Cerrar sesión"):
         st.session_state.perfil = None
         st.session_state.pop("mensajes", None)
@@ -312,8 +323,13 @@ if not llave:
 # Nota: se abre una conexión nueva en cada mensaje. Antes la conexión se
 # guardaba abierta entre mensajes y Streamlit la cerraba, lo que daba el
 # error "client has been closed" y Luna dejaba de responder.
-def _generar_respuesta(modelo):
-    """Pide una respuesta a Luna con un modelo dado."""
+def _generar_respuesta(modelo, con_busqueda=True):
+    """Pide una respuesta a Luna con un modelo dado.
+
+    Con con_busqueda=True, Luna puede buscar en internet con la
+    herramienta de Google del propio modelo (sin llave ni servicio
+    nuevo) y agrega las fuentes al final de su respuesta.
+    """
     cliente = genai.Client(api_key=llave)
     historial = []
     for m in st.session_state.mensajes:
@@ -325,27 +341,54 @@ def _generar_respuesta(modelo):
             )
         )
     privada_actual, familiar_actual = leer_memoria(perfil)
+    config = types.GenerateContentConfig(
+        system_instruction=PERSONALIDAD
+        + "\n\nEsto es lo que recuerdas de tu usuario:\n"
+        + formatear_memoria(privada_actual, familiar_actual),
+    )
+    if con_busqueda:
+        config.tools = [types.Tool(google_search=types.GoogleSearch())]
     resp = cliente.models.generate_content(
         model=modelo,
         contents=historial,
-        config=types.GenerateContentConfig(
-            system_instruction=PERSONALIDAD
-            + "\n\nEsto es lo que recuerdas de tu usuario:\n"
-            + formatear_memoria(privada_actual, familiar_actual),
-        ),
+        config=config,
     )
-    return resp.text
+    texto = resp.text
+    # Fuentes de la búsqueda, si el modelo usó internet.
+    try:
+        chunks = resp.candidates[0].grounding_metadata.grounding_chunks
+        fuentes = []
+        for c in chunks or []:
+            web = getattr(c, "web", None)
+            if web and web.uri and web.uri not in [u for _, u in fuentes]:
+                fuentes.append((web.title or web.uri, web.uri))
+        if fuentes:
+            texto += "\n\nFuentes:\n" + "\n".join(
+                f"- [{t}]({u})" for t, u in fuentes
+            )
+    except Exception:
+        pass
+    return texto
 
 
 def responder_con_luna():
-    """Pregunta a Luna. Si el modelo principal está saturado, intenta con el de respaldo."""
+    """Pregunta a Luna, con búsqueda en internet.
+
+    Orden de intentos: modelo principal con búsqueda; si está saturado,
+    modelo de respaldo con búsqueda; si la búsqueda falla, modelo
+    principal sin búsqueda. Si todo falla, el error sube y el chat
+    muestra el mensaje claro que corresponde.
+    """
     try:
-        return _generar_respuesta(MODELO)
+        return _generar_respuesta(MODELO, con_busqueda=True)
     except Exception as e:
         texto_error = str(e)
-        if "503" not in texto_error and "UNAVAILABLE" not in texto_error:
-            raise
-        return _generar_respuesta(MODELO_RESPALDO)
+        if "503" in texto_error or "UNAVAILABLE" in texto_error:
+            try:
+                return _generar_respuesta(MODELO_RESPALDO, con_busqueda=True)
+            except Exception:
+                return _generar_respuesta(MODELO, con_busqueda=False)
+        return _generar_respuesta(MODELO, con_busqueda=False)
 
 
 if "mensajes" not in st.session_state:
@@ -360,6 +403,8 @@ if "mensajes" not in st.session_state:
                 "rol": "assistant",
                 "texto": (
                     f"¡Hola, soy {NOMBRE}! Escribe abajo para chatear conmigo.\n\n"
+                    "Si me preguntas algo actual (el clima de hoy, una noticia, un resultado), "
+                    "lo busco en internet y te respondo con sus fuentes.\n\n"
                     "Si me dices algo que empiece con **'recuerda que'**, lo guardo en mi memoria. "
                     "Si activas 'Guardar como familiar' en la barra lateral, lo guardado lo veremos los dos. "
                     "Escribe **'memoria'** para ver lo que recuerdo de ti."
