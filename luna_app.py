@@ -15,11 +15,14 @@
 #      luna_app.py y requirements.txt
 #   3. Entra a share.streamlit.io, toca "New app", elige tu repositorio
 #      y el archivo luna_app.py, y toca "Deploy".
-#   4. Abre el enlace que te da Streamlit, pega tu llave en la barra lateral
-#      y chatea con Luna. Ese enlace lo puede abrir también Betsy.
+#   4. Abre el enlace que te da Streamlit y chatea con Luna. Ese enlace lo
+#      puede abrir también Betsy.
 #
 # La llave se crea gratis en https://aistudio.google.com (botón "Get API Key").
-# Nunca la escribas dentro del código: se pega en la barra lateral al abrir la app.
+# Nunca la escribas dentro del código. Dos formas de usarla:
+#   - Fija: guárdala en los Secrets de la app en Streamlit Cloud con el
+#     nombre GOOGLE_API_KEY. Así nadie tiene que pegarla al abrir la app.
+#   - Por sesión: pégala en la barra lateral al abrir la app.
 
 import requests
 import streamlit as st
@@ -49,6 +52,15 @@ def _supabase():
     if not url or not key:
         return None
     return url.rstrip("/"), key
+
+
+def _llave_fija():
+    """Devuelve la llave guardada en los Secrets, o '' si no está."""
+    try:
+        llave = st.secrets["GOOGLE_API_KEY"]
+    except Exception:
+        return ""
+    return llave or ""
 
 
 def leer_memoria():
@@ -103,11 +115,16 @@ st.title("🌙 Luna")
 # ---- Barra lateral: llave y memoria ----
 with st.sidebar:
     st.header("Ajustes")
-    llave = st.text_input(
-        "Tu llave de Google (gratis, de AI Studio)",
-        type="password",
-        help="Se crea en aistudio.google.com. Solo vive en tu sesión, no se guarda en el código.",
-    )
+    llave_fija = _llave_fija()
+    if llave_fija:
+        st.success("Llave de Google guardada en la app ✓")
+        llave = llave_fija
+    else:
+        llave = st.text_input(
+            "Tu llave de Google (gratis, de AI Studio)",
+            type="password",
+            help="Se crea en aistudio.google.com. Solo vive en tu sesión, no se guarda en el código.",
+        )
     if not _supabase():
         st.warning(
             "Falta conectar la base de datos: agrega SUPABASE_URL y "
