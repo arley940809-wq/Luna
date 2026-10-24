@@ -3,11 +3,20 @@
 # Qué es: la misma Luna de Colab, pero con pantalla de chat con burbujas,
 # como WhatsApp o como esta app. Se publica gratis en Streamlit Cloud.
 #
-# Memoria permanente: lo que aprende Luna ya no vive en un archivo del
-# servidor (que se borra cuando la app se duerme), sino en una base de
-# datos gratis de Supabase. Así recuerda para siempre, aunque la app se
-# reinicie. La conexión se guarda en los Secrets de Streamlit, nunca en
-# el código: SUPABASE_URL y SUPABASE_ANON_KEY.
+# Perfiles con contraseña: Arley y Betsy, cada uno con su memoria privada
+# más una memoria familiar compartida. Al abrir la app se elige el perfil
+# y se escribe su contraseña. Las contraseñas se guardan en los Secrets
+# de Streamlit (CLAVE_ARLEY y CLAVE_BETSY), nunca en el código.
+#
+# Memoria permanente: vive en una base de datos gratis de Supabase, tabla
+# "memoria" con columna "perfil": 'arley', 'betsy' o 'familia'. La conexión
+# se guarda en los Secrets de Streamlit, nunca en el código: SUPABASE_URL
+# y SUPABASE_ANON_KEY.
+#
+# Llave de Google: fija en los Secrets (GOOGLE_API_KEY) para que nadie
+# tenga que pegarla al abrir la app. Si no está, se puede pegar en la
+# barra lateral por sesión. Se crea gratis en https://aistudio.google.com
+# (botón "Get API Key"). Nunca la escribas dentro del código.
 #
 # Cómo publicarla (desde el teléfono):
 #   1. Crea una cuenta en github.com (si no tienes).
@@ -15,14 +24,8 @@
 #      luna_app.py y requirements.txt
 #   3. Entra a share.streamlit.io, toca "New app", elige tu repositorio
 #      y el archivo luna_app.py, y toca "Deploy".
-#   4. Abre el enlace que te da Streamlit y chatea con Luna. Ese enlace lo
-#      puede abrir también Betsy.
-#
-# La llave se crea gratis en https://aistudio.google.com (botón "Get API Key").
-# Nunca la escribas dentro del código. Dos formas de usarla:
-#   - Fija: guárdala en los Secrets de la app en Streamlit Cloud con el
-#     nombre GOOGLE_API_KEY. Así nadie tiene que pegarla al abrir la app.
-#   - Por sesión: pégala en la barra lateral al abrir la app.
+#   4. Abre el enlace que te da Streamlit, elige tu perfil, escribe tu
+#      contraseña y chatea con Luna.
 
 import requests
 import streamlit as st
@@ -40,6 +43,12 @@ PERSONALIDAD = (
 ARCHIVO_MEMORIA = "memoria.txt"  # nombre del archivo al descargar la memoria
 MODELO = "gemini-3.6-flash"  # modelo actual gratis de Google
 
+# Perfiles: nombre que se muestra y nombre del secreto con su contraseña.
+PERFILES = {
+    "arley": {"nombre": "Arley", "secreto": "CLAVE_ARLEY"},
+    "betsy": {"nombre": "Betsy", "secreto": "CLAVE_BETSY"},
+}
+
 
 # ---- Memoria permanente (base de datos Supabase) ----
 def _supabase():
@@ -55,7 +64,7 @@ def _supabase():
 
 
 def _llave_fija():
-    """Devuelve la llave guardada en los Secrets, o '' si no está."""
+    """Devuelve la llave de Google guardada en los Secrets, o '' si no está."""
     try:
         llave = st.secrets["GOOGLE_API_KEY"]
     except Exception:
@@ -63,29 +72,41 @@ def _llave_fija():
     return llave or ""
 
 
-def leer_memoria():
-    """Lee lo que Luna recuerda de ti desde la base de datos."""
+def _clave_perfil(perfil):
+    """Devuelve la contraseña de un perfil desde los Secrets, o '' si falta."""
+    try:
+        clave = st.secrets[PERFILES[perfil]["secreto"]]
+    except Exception:
+        return ""
+    return clave or ""
+
+
+def leer_memoria(perfil):
+    """Lee la memoria privada de un perfil y la familiar. Devuelve (privada, familiar)."""
     sb = _supabase()
     if not sb:
-        return "Todavía no sé nada de ti."
+        return [], []
     url, key = sb
     try:
         r = requests.get(
-            f"{url}/rest/v1/memoria?select=texto&order=id.asc",
+            f"{url}/rest/v1/memoria?select=texto,perfil&perfil=in.({perfil},familia)&order=id.asc",
             headers={"apikey": key, "Authorization": f"Bearer {key}"},
             timeout=20,
         )
         if r.status_code != 200:
-            return "Todavía no sé nada de ti."
-        filas = r.json()
-        if not filas:
-            return "Todavía no sé nada de ti."
-        return "\n".join("- " + f["texto"] for f in filas)
+            return [], []
+        privada, familiar = [], []
+        for f in r.json():
+            if f["perfil"] == "familia":
+                familiar.append(f["texto"])
+            else:
+                privada.append(f["texto"])
+        return privada, familiar
     except Exception:
-        return "Todavía no sé nada de ti."
+        return [], []
 
 
-def guardar_memoria(texto):
+def guardar_memoria(texto, perfil):
     """Guarda un dato nuevo en la base de datos. Devuelve True si quedó guardado."""
     sb = _supabase()
     if not sb:
@@ -100,7 +121,7 @@ def guardar_memoria(texto):
                 "Content-Type": "application/json",
                 "Prefer": "return=minimal",
             },
-            json={"texto": texto},
+            json={"texto": texto, "perfil": perfil},
             timeout=20,
         )
         return r.status_code in (200, 201, 204)
@@ -108,13 +129,55 @@ def guardar_memoria(texto):
         return False
 
 
+def formatear_memoria(privada, familiar):
+    """Texto con las dos partes de la memoria, para mostrar o para Luna."""
+    partes = []
+    if privada:
+        partes.append("Lo tuyo:\n" + "\n".join("- " + t for t in privada))
+    if familiar:
+        partes.append("Lo familiar:\n" + "\n".join("- " + t for t in familiar))
+    return "\n\n".join(partes) if partes else "Todavía no sé nada de ti."
+
+
 # ---- Página ----
 st.set_page_config(page_title="Luna", page_icon="🌙")
 st.title("🌙 Luna")
 
-# ---- Barra lateral: llave y memoria ----
+# ---- Entrada con contraseña ----
+if "perfil" not in st.session_state:
+    st.session_state.perfil = None
+
+if not st.session_state.perfil:
+    st.write("¿Quién eres?")
+    perfil_elegido = st.radio(
+        "Elige tu perfil",
+        ["Arley", "Betsy"],
+        horizontal=True,
+    )
+    clave_escrita = st.text_input("Tu contraseña", type="password")
+    if st.button("Entrar"):
+        codigo = "arley" if perfil_elegido == "Arley" else "betsy"
+        clave_real = _clave_perfil(codigo)
+        if not clave_real:
+            st.error("Ese perfil todavía no tiene contraseña configurada en los Secrets.")
+        elif clave_escrita == clave_real:
+            st.session_state.perfil = codigo
+            st.rerun()
+        else:
+            st.error("Contraseña incorrecta. Inténtalo de nuevo.")
+    st.stop()
+
+perfil = st.session_state.perfil
+nombre_perfil = PERFILES[perfil]["nombre"]
+
+# ---- Barra lateral: llave, memoria y sesión ----
 with st.sidebar:
     st.header("Ajustes")
+    st.write(f"Perfil: {nombre_perfil}")
+    if st.button("Cerrar sesión"):
+        st.session_state.perfil = None
+        st.session_state.pop("mensajes", None)
+        st.rerun()
     llave_fija = _llave_fija()
     if llave_fija:
         st.success("Llave de Google guardada en la app ✓")
@@ -130,13 +193,28 @@ with st.sidebar:
             "Falta conectar la base de datos: agrega SUPABASE_URL y "
             "SUPABASE_ANON_KEY en los Secrets de la app en Streamlit Cloud."
         )
-    st.subheader("Lo que Luna recuerda")
-    memoria_texto = leer_memoria()
-    st.write(memoria_texto)
-    if memoria_texto != "Todavía no sé nada de ti.":
+    privada, familiar = leer_memoria(perfil)
+    st.subheader("Lo que Luna recuerda de ti")
+    st.write(
+        "\n".join("- " + t for t in privada)
+        if privada
+        else "Todavía no sé nada de ti."
+    )
+    st.subheader("Lo familiar")
+    st.write(
+        "\n".join("- " + t for t in familiar)
+        if familiar
+        else "Todavía no hay recuerdos familiares."
+    )
+    guardar_familiar = st.checkbox(
+        "Guardar lo próximo como familiar (visible para ambos)",
+        help="Si está activado, lo próximo que guardes con 'recuerda que' lo verá el otro perfil también. Desactívalo para volver a guardar solo para ti.",
+    )
+    texto_descarga = formatear_memoria(privada, familiar)
+    if texto_descarga != "Todavía no sé nada de ti.":
         st.download_button(
             "Descargar memoria.txt",
-            memoria_texto,
+            texto_descarga,
             file_name="memoria.txt",
             help="Guarda la memoria en tu teléfono para no perderla.",
         )
@@ -164,13 +242,14 @@ def responder_con_luna():
                 parts=[types.Part.from_text(text=m["texto"])],
             )
         )
+    privada_actual, familiar_actual = leer_memoria(perfil)
     resp = cliente.models.generate_content(
         model=MODELO,
         contents=historial,
         config=types.GenerateContentConfig(
             system_instruction=PERSONALIDAD
             + "\n\nEsto es lo que recuerdas de tu usuario:\n"
-            + leer_memoria(),
+            + formatear_memoria(privada_actual, familiar_actual),
         ),
     )
     return resp.text
@@ -183,6 +262,7 @@ if "mensajes" not in st.session_state:
             "texto": (
                 f"¡Hola, soy {NOMBRE}! Escribe abajo para chatear conmigo.\n\n"
                 "Si me dices algo que empiece con **'recuerda que'**, lo guardo en mi memoria. "
+                "Si activas 'Guardar como familiar' en la barra lateral, lo guardado lo veremos los dos. "
                 "Escribe **'memoria'** para ver lo que recuerdo de ti."
             ),
         }
@@ -201,7 +281,8 @@ if texto := st.chat_input("Escribe tu mensaje..."):
     if texto.lower().startswith("recuerda que"):
         dato = texto[len("recuerda que"):].strip()
         if dato:
-            if guardar_memoria(dato):
+            destino = "familia" if guardar_familiar else perfil
+            if guardar_memoria(dato, destino):
                 respuesta = "Listo, ya lo guardé en mi memoria."
             else:
                 respuesta = (
@@ -211,7 +292,8 @@ if texto := st.chat_input("Escribe tu mensaje..."):
         else:
             respuesta = "Dime qué quieres que recuerde, por ejemplo: recuerda que mi esposa es Betsy"
     elif texto.lower() == "memoria":
-        respuesta = "Esto es lo que recuerdo de ti:\n\n" + leer_memoria()
+        privada_actual, familiar_actual = leer_memoria(perfil)
+        respuesta = "Esto es lo que recuerdo de ti:\n\n" + formatear_memoria(privada_actual, familiar_actual)
     else:
         try:
             respuesta = responder_con_luna()
