@@ -79,21 +79,33 @@ if not llave:
     )
     st.stop()
 
-# ---- Conexión con Luna (una sola vez por sesión) ----
-if "chat" not in st.session_state:
-    try:
-        cliente = genai.Client(api_key=llave)
-        st.session_state.chat = cliente.chats.create(
-            model=MODELO,
-            config=types.GenerateContentConfig(
-                system_instruction=PERSONALIDAD
-                + "\n\nEsto es lo que recuerdas de tu usuario:\n"
-                + leer_memoria(),
-            ),
+# ---- Conexión con Luna ----
+# Nota: se abre una conexión nueva en cada mensaje. Antes la conexión se
+# guardaba abierta entre mensajes y Streamlit la cerraba, lo que daba el
+# error "client has been closed" y Luna dejaba de responder.
+def responder_con_luna():
+    """Pregunta a Luna usando todo el historial de esta conversación."""
+    cliente = genai.Client(api_key=llave)
+    historial = []
+    for m in st.session_state.mensajes:
+        rol = "user" if m["rol"] == "user" else "model"
+        historial.append(
+            types.Content(
+                role=rol,
+                parts=[types.Part.from_text(text=m["texto"])],
+            )
         )
-    except Exception as e:
-        st.error(f"No pude conectar con Google. Revisa tu llave y tu conexión. Detalle: {e}")
-        st.stop()
+    resp = cliente.models.generate_content(
+        model=MODELO,
+        contents=historial,
+        config=types.GenerateContentConfig(
+            system_instruction=PERSONALIDAD
+            + "\n\nEsto es lo que recuerdas de tu usuario:\n"
+            + leer_memoria(),
+        ),
+    )
+    return resp.text
+
 
 if "mensajes" not in st.session_state:
     st.session_state.mensajes = [
@@ -128,8 +140,7 @@ if texto := st.chat_input("Escribe tu mensaje..."):
         respuesta = "Esto es lo que recuerdo de ti:\n\n" + leer_memoria()
     else:
         try:
-            resp = st.session_state.chat.send_message(texto)
-            respuesta = resp.text
+            respuesta = responder_con_luna()
         except Exception as e:
             respuesta = f"Hubo un problema al responder: {e}\n\nRevisa tu llave y tu conexión."
 
