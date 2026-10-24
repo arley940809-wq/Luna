@@ -354,6 +354,10 @@ def _generar_respuesta(modelo, con_busqueda=True):
         config=config,
     )
     texto = resp.text
+    # Si el modelo devolvió una respuesta vacía, tratarlo como fallo para
+    # que la cadena de reintentos actúe: nunca entregar una burbuja en blanco.
+    if not texto or not texto.strip():
+        raise ValueError("Respuesta vacía del modelo")
     # Fuentes de la búsqueda, si el modelo usó internet.
     try:
         chunks = resp.candidates[0].grounding_metadata.grounding_chunks
@@ -374,16 +378,16 @@ def _generar_respuesta(modelo, con_busqueda=True):
 def responder_con_luna():
     """Pregunta a Luna, con búsqueda en internet.
 
-    Orden de intentos: modelo principal con búsqueda; si está saturado,
-    modelo de respaldo con búsqueda; si la búsqueda falla, modelo
-    principal sin búsqueda. Si todo falla, el error sube y el chat
-    muestra el mensaje claro que corresponde.
+    Orden de intentos: modelo principal con búsqueda; si está saturado
+    o devolvió una respuesta vacía, modelo de respaldo con búsqueda;
+    si eso también falla, modelo principal sin búsqueda. Si todo falla,
+    el error sube y el chat muestra el mensaje claro que corresponde.
     """
     try:
         return _generar_respuesta(MODELO, con_busqueda=True)
     except Exception as e:
         texto_error = str(e)
-        if "503" in texto_error or "UNAVAILABLE" in texto_error:
+        if "503" in texto_error or "UNAVAILABLE" in texto_error or "vacía" in texto_error:
             try:
                 return _generar_respuesta(MODELO_RESPALDO, con_busqueda=True)
             except Exception:
