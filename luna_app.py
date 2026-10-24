@@ -47,6 +47,7 @@ PERSONALIDAD = (
 )
 ARCHIVO_MEMORIA = "memoria.txt"  # nombre del archivo al descargar la memoria
 MODELO = "gemini-3.6-flash"  # modelo actual gratis de Google
+MODELO_RESPALDO = "gemini-3.8-flash"  # se usa solo si el principal está saturado
 
 # Perfiles: nombre que se muestra y nombre del secreto con su contraseña.
 PERFILES = {
@@ -311,8 +312,8 @@ if not llave:
 # Nota: se abre una conexión nueva en cada mensaje. Antes la conexión se
 # guardaba abierta entre mensajes y Streamlit la cerraba, lo que daba el
 # error "client has been closed" y Luna dejaba de responder.
-def responder_con_luna():
-    """Pregunta a Luna usando todo el historial de esta conversación."""
+def _generar_respuesta(modelo):
+    """Pide una respuesta a Luna con un modelo dado."""
     cliente = genai.Client(api_key=llave)
     historial = []
     for m in st.session_state.mensajes:
@@ -325,7 +326,7 @@ def responder_con_luna():
         )
     privada_actual, familiar_actual = leer_memoria(perfil)
     resp = cliente.models.generate_content(
-        model=MODELO,
+        model=modelo,
         contents=historial,
         config=types.GenerateContentConfig(
             system_instruction=PERSONALIDAD
@@ -334,6 +335,17 @@ def responder_con_luna():
         ),
     )
     return resp.text
+
+
+def responder_con_luna():
+    """Pregunta a Luna. Si el modelo principal está saturado, intenta con el de respaldo."""
+    try:
+        return _generar_respuesta(MODELO)
+    except Exception as e:
+        texto_error = str(e)
+        if "503" not in texto_error and "UNAVAILABLE" not in texto_error:
+            raise
+        return _generar_respuesta(MODELO_RESPALDO)
 
 
 if "mensajes" not in st.session_state:
@@ -386,7 +398,22 @@ if texto := st.chat_input("Escribe tu mensaje..."):
         try:
             respuesta = responder_con_luna()
         except Exception as e:
-            respuesta = f"Hubo un problema al responder: {e}\n\nRevisa tu llave y tu conexión."
+            texto_error = str(e)
+            if "503" in texto_error or "UNAVAILABLE" in texto_error:
+                respuesta = (
+                    "El modelo de Google está saturado en este momento. "
+                    "Espera un ratito y vuelve a escribir tu mensaje."
+                )
+            elif "401" in texto_error or "API key" in texto_error or "API_KEY" in texto_error:
+                respuesta = (
+                    "Parece que hay un problema con la llave de Google. "
+                    "Revisa que siga guardada en la app."
+                )
+            else:
+                respuesta = (
+                    "Hubo un problema al responder. "
+                    "Inténtalo de nuevo en un momento."
+                )
 
     st.session_state.mensajes.append({"rol": "assistant", "texto": respuesta})
     guardar_mensaje(perfil, "assistant", respuesta)
